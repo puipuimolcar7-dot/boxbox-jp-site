@@ -1,0 +1,7 @@
+body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 20px 60px; line-height: 1.8; color: #1A1D24; background: #F7F3EC; }
+h1 { font-size: 22px; }
+h2 { font-size: 17px; margin-top: 32px; border-left: 4px solid #D96F00; padding-left: 10px; }
+p, li { font-size: 14px; }
+.updated { color: #8A8375; font-size: 13px; }
+.lang { font-size: 13px; }
+a { color: #D96F00; }
