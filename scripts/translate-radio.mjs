@@ -82,6 +82,7 @@ async function translateBatch(clips, driverName) {
     return [];
   }
   const json = await res.json();
+  console.log(`  Gemini ${res.status}, ${parts.length - 1} parts sent, finish=${json.candidates?.[0]?.finishReason ?? 'none'}, reply: ${JSON.stringify(json).slice(0, 400)}`);
   if (!res.ok) throw new Error(`Gemini ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
   const text = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '[]';
   let rows;
