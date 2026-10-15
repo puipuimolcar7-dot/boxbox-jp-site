@@ -63,19 +63,28 @@ async function translateBatch(clips, driverName) {
   model ??= await pickModel();
   const parts = [];
   for (const [i, c] of clips.entries()) {
-    const audio = await fetch(c.recording_url);
-    if (!audio.ok) continue;
+    const audio = await fetch(c.recording_url, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; BoxBoxJP-radio/1.0)' } });
+    if (!audio.ok) {
+      console.log(`  audio ${audio.status} for ${fileName(c.recording_url)}`);
+      continue;
+    }
     const buf = Buffer.from(await audio.arrayBuffer());
     parts.push({ text: `Clip ${i} — driver: ${driverName(c.driver_number)}` });
     parts.push({ inline_data: { mime_type: 'audio/mp3', data: buf.toString('base64') } });
   }
+  if (parts.length === 0) return [];
   parts.push({ text: PROMPT });
   requests++;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
-    body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }),
-  });
+  let res;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
+      body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }),
+    });
+    if (res.status !== 503 && res.status !== 500) break;
+    await sleep(15_000 * (attempt + 1));
+  }
   if (res.status === 429) {
     quotaHit = true;
     console.log('Gemini quota reached; stopping for this run.');
