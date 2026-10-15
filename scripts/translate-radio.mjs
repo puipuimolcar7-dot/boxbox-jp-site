@@ -81,6 +81,7 @@ async function translateBatch(clips, driverName) {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
       body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }),
+      signal: AbortSignal.timeout(120_000),
     });
     if (res.status !== 503 && res.status !== 500) break;
     await sleep(15_000 * (attempt + 1));
@@ -141,12 +142,20 @@ for (const s of ended) {
   };
   console.log(`${s.session_key} ${s.location} ${s.session_name}: ${missing.length} clips to translate`);
   for (let i = 0; i < missing.length && requests < MAX_REQUESTS && !quotaHit; i += BATCH) {
-    const rows = await translateBatch(missing.slice(i, i + BATCH), driverName);
+    let rows = [];
+    try {
+      rows = await translateBatch(missing.slice(i, i + BATCH), driverName);
+    } catch (e) {
+      // A stalled or failed request must not lose the batches already saved: skip this one, it is retried next run.
+      console.log(`  batch failed, skipping: ${e?.cause?.code ?? e?.message ?? e}`);
+    }
     for (const r of rows) data.items[fileName(r.clip.recording_url)] = { en: r.en, ja: r.ja, ...(r.note ? { note: r.note } : {}) };
     if (rows.length) {
       data.updated = new Date().toISOString();
       writeFileSync(file, JSON.stringify(data));
       index.sessions[s.session_key] = { count: Object.keys(data.items).length, updated: data.updated };
+      index.updated = data.updated;
+      writeFileSync(join(OUT, 'index.json'), JSON.stringify(index, null, 1));
       changed = true;
     }
     // Free tier: a few requests per minute.
