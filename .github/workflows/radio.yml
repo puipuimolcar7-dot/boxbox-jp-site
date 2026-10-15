@@ -1,0 +1,39 @@
+name: Translate team radio
+
+on:
+  schedule:
+    # Every hour. New sessions get translated after they end; older ones are back-filled within the free quota.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: radio
+  cancel-in-progress: false
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Transcribe and translate new team radio
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/translate-radio.mjs
+      - name: Commit results
+        run: |
+          git config user.name "boxbox-jp-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add radio
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update team radio translations"
+            git push
+          fi
