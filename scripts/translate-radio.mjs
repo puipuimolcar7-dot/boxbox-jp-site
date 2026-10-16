@@ -47,12 +47,24 @@ async function pickModel() {
   return model;
 }
 
-const PROMPT = `These are Formula 1 team radio clips between a driver and their race engineer.
-For each clip, return one JSON object: {"clip": <clip number>, "en": "<exact English transcript>", "ja": "<natural Japanese translation>", "note": "<one short Japanese sentence explaining F1 jargon or context, or empty string>"}.
+// Bump when the output gains fields: older items are translated again (see needsUpdate).
+const ITEM_VERSION = 2;
+
+const PROMPT = `These are Formula 1 team radio clips between a driver and their race engineer. The reader is a Japanese learner of English.
+For each clip, return one JSON object:
+{"clip": <clip number>,
+ "en": "<exact English transcript>",
+ "ja": "<natural Japanese translation>",
+ "note": "<one short Japanese sentence explaining F1 jargon or context, or empty string>",
+ "words": [{"en": "<word or phrase exactly as said>", "ja": "<meaning in Japanese in this context>"}],
+ "grammar": [{"quote": "<the exact fragment of the transcript>", "pattern": "<the grammar pattern in English, e.g. be happy for someone to do>", "ja": "<short Japanese explanation of the pattern and what it means here>"}]}
 Rules:
 - Transcribe only what is actually said. Write [inaudible] for words you cannot make out. Never invent content.
 - When it is clear who speaks, prefix parts with "Driver:" / "Engineer:" in English and "ドライバー：" / "エンジニア：" in Japanese.
 - Write driver and team names in katakana in Japanese. Keep the tone of the original (excited, angry, calm).
+- "words": up to 4 items worth learning (F1 jargon, idioms, phrasal verbs, useful verbs). Skip easy words. Use [] when there is nothing to teach.
+- "grammar": up to 2 items, the most instructive structures actually present (e.g. modals, conditionals, imperatives, passive, present perfect, "keep + -ing", "need to"). Explain in plain Japanese so that a junior-high level learner understands. Use [] when the clip is too short or unclear.
+- For "[no speech]" or "[inaudible]" clips use empty arrays.
 Return a JSON array only.`;
 
 let requests = 0;
@@ -102,12 +114,25 @@ async function translateBatch(clips, driverName) {
     console.log('Unparseable Gemini output, skipping batch:', text.slice(0, 200));
     return [];
   }
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
   return (Array.isArray(rows) ? rows : [])
     .filter((r) => Number.isInteger(r.clip) && clips[r.clip] && typeof r.en === 'string' && typeof r.ja === 'string')
-    .map((r) => ({ clip: clips[r.clip], en: r.en.trim(), ja: r.ja.trim(), note: typeof r.note === 'string' ? r.note.trim() : '' }));
+    .map((r) => ({
+      clip: clips[r.clip],
+      en: r.en.trim(),
+      ja: r.ja.trim(),
+      note: str(r.note),
+      words: (Array.isArray(r.words) ? r.words : []).map((w) => ({ en: str(w?.en), ja: str(w?.ja) })).filter((w) => w.en && w.ja).slice(0, 4),
+      grammar: (Array.isArray(r.grammar) ? r.grammar : [])
+        .map((g) => ({ quote: str(g?.quote), pattern: str(g?.pattern), ja: str(g?.ja) }))
+        .filter((g) => g.pattern && g.ja)
+        .slice(0, 2),
+    }));
 }
 
 const fileName = (url) => url.split('/').pop();
+/** Items from before the learning fields existed are translated again. */
+const needsUpdate = (item) => !item || (item.v ?? 1) < ITEM_VERSION;
 
 const sessions = [];
 for (const y of YEARS) sessions.push(...(await openf1(`sessions?year=${y}`)));
@@ -123,9 +148,10 @@ for (const s of ended) {
   if (requests >= MAX_REQUESTS || quotaHit) break;
   const file = join(OUT, `${s.session_key}.json`);
   const data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { session_key: s.session_key, complete: false, items: {} };
-  if (data.complete) continue;
+  // A session marked complete is revisited when its items predate the current item version.
+  if (data.complete && !Object.values(data.items).some(needsUpdate)) continue;
   const radio = await openf1(`team_radio?session_key=${s.session_key}`);
-  const missing = radio.filter((r) => !data.items[fileName(r.recording_url)]);
+  const missing = radio.filter((r) => needsUpdate(data.items[fileName(r.recording_url)]));
   const settled = Date.parse(s.date_end) + 2 * 86_400_000 < now.getTime();
   if (!missing.length) {
     if (settled && !data.complete) {
@@ -149,7 +175,16 @@ for (const s of ended) {
       // A stalled or failed request must not lose the batches already saved: skip this one, it is retried next run.
       console.log(`  batch failed, skipping: ${e?.cause?.code ?? e?.message ?? e}`);
     }
-    for (const r of rows) data.items[fileName(r.clip.recording_url)] = { en: r.en, ja: r.ja, ...(r.note ? { note: r.note } : {}) };
+    for (const r of rows) {
+      data.items[fileName(r.clip.recording_url)] = {
+        v: ITEM_VERSION,
+        en: r.en,
+        ja: r.ja,
+        ...(r.note ? { note: r.note } : {}),
+        ...(r.words.length ? { words: r.words } : {}),
+        ...(r.grammar.length ? { grammar: r.grammar } : {}),
+      };
+    }
     if (rows.length) {
       data.updated = new Date().toISOString();
       writeFileSync(file, JSON.stringify(data));
