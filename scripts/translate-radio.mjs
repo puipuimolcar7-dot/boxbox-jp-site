@@ -14,7 +14,12 @@ const MAX_REQUESTS = Number(process.env.MAX_REQUESTS ?? 10);
 const now = new Date();
 const YEARS = (process.env.YEARS ?? `${now.getUTCFullYear()},${now.getUTCFullYear() - 1}`).split(',').map(Number);
 const OUT = join(import.meta.dirname, '..', 'radio');
-const BATCH = 8;
+// Fewer clips per request: big batches time out, and a timed-out request still costs quota.
+const BATCH = 3;
+// A clip that keeps failing is given up after this many failed batches (it was re-sent every hour before).
+const MAX_FAILS = 3;
+const FAIL_FILE = join(import.meta.dirname, '.radio-failures.json');
+const failures = existsSync(FAIL_FILE) ? JSON.parse(readFileSync(FAIL_FILE, 'utf8')) : {};
 mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -151,7 +156,7 @@ for (const s of ended) {
   // A session marked complete is revisited when its items predate the current item version.
   if (data.complete && !Object.values(data.items).some(needsUpdate)) continue;
   const radio = await openf1(`team_radio?session_key=${s.session_key}`);
-  const missing = radio.filter((r) => needsUpdate(data.items[fileName(r.recording_url)]));
+  const missing = radio.filter((r) => needsUpdate(data.items[fileName(r.recording_url)]) && (failures[fileName(r.recording_url)] ?? 0) < MAX_FAILS);
   const settled = Date.parse(s.date_end) + 2 * 86_400_000 < now.getTime();
   if (!missing.length) {
     if (settled && !data.complete) {
@@ -174,6 +179,11 @@ for (const s of ended) {
     } catch (e) {
       // A stalled or failed request must not lose the batches already saved: skip this one, it is retried next run.
       console.log(`  batch failed, skipping: ${e?.cause?.code ?? e?.message ?? e}`);
+      for (const c of missing.slice(i, i + BATCH)) {
+        const k = fileName(c.recording_url);
+        failures[k] = (failures[k] ?? 0) + 1;
+      }
+      writeFileSync(FAIL_FILE, JSON.stringify(failures, null, 1));
     }
     for (const r of rows) {
       data.items[fileName(r.clip.recording_url)] = {
